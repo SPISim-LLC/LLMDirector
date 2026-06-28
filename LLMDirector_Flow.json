@@ -1,0 +1,87 @@
+{
+  "startTopic": "01: Read_Update_Spec",
+  "endTopic": "11B: Stage_And_Commit_No_Push",
+  "entryTopics": [
+    "01: Read_Update_Spec",
+    "02: Critique_Spec",
+    "04: Implement_Spec",
+    "05: Review_Implementation",
+    "08: Address_Review",
+    "10: Update_Docs_And_Goldens"
+  ],
+  "questionsBackTo": "03: Answer_Update_Spec",
+  "questionsEscalateTopics": ["05: Review_Implementation", "07: Clarify_Review"],
+  "questionsSentinel": "$QUESTIONS_FILE",
+  "topics": {
+    "01: Read_Update_Spec": {
+      "nextTo": "02: Critique_Spec",
+      "loopCounter": "SpecQA",
+      "incrementLoopCounter": false
+    },
+    "02: Critique_Spec": {
+      "backIf": "$QUESTIONS_FILE",
+      "backTo": "03: Answer_Update_Spec",
+      "nextTo": "04: Implement_Spec",
+      "loopCounter": "SpecQA",
+      "incrementLoopCounter": true
+    },
+    "03: Answer_Update_Spec": {
+      "escalateIf": "$QUESTIONS_FILE",
+      "escalateKind": "QUESTION",
+      "nextTo": "02: Critique_Spec"
+    },
+    "04: Implement_Spec": {
+      "backIf": "$QUESTIONS_FILE",
+      "backTo": "03: Answer_Update_Spec",
+      "nextTo": "05: Review_Implementation",
+      "loopCounter": "SpecQA",
+      "incrementLoopCounter": true
+    },
+    "05: Review_Implementation": {
+      "backIf": "$IMPLEMENTATION_REVIEW_FILE",
+      "backTo": "06: Critique_Review",
+      "nextTo": "09: Validate_Implementation"
+    },
+    "06: Critique_Review": {
+      "nextIf": "$REVIEW_QUESTIONS_FILE",
+      "nextIfTo": "07: Clarify_Review",
+      "nextTo": "08: Address_Review",
+      "loopCounter": "CritiqueReview"
+    },
+    "07: Clarify_Review": {
+      "nextIf": "$REVIEW_QUESTIONS_FILE",
+      "nextIfTo": "06: Critique_Review",
+      "nextTo": "08: Address_Review",
+      "loopCounter": "CritiqueReview",
+      "incrementLoopCounter": true
+    },
+    "08: Address_Review": {
+      "nextTo": "05: Review_Implementation"
+    },
+    "09: Validate_Implementation": {
+      "action": "validate_report",
+      "nextTo": "09B: Judge_Validation",
+      "resultFile": "TempTBD_ValidationResult.md",
+      "noSuiteMarker": "<!-- LLMDIRECTOR: NO_TEST_SUITE -->",
+      "rosterMarker": "<!-- LLMDIRECTOR: TEST_ROSTER="
+    },
+    "09B: Judge_Validation": {
+      "nextIf": "$IMPLEMENTATION_REVIEW_FILE",
+      "nextIfTo": "08: Address_Review",
+      "nextTo": "10: Update_Docs_And_Goldens",
+      "loopCounter": "Validate",
+      "incrementLoopCounter": true
+    },
+    "10: Update_Docs_And_Goldens": {
+      "nextTo": "11: Prepare_To_Commit"
+    },
+    "11: Prepare_To_Commit": {
+      "action": "commit_approval",
+      "nextTo": "11B: Stage_And_Commit_No_Push"
+    },
+    "11B: Stage_And_Commit_No_Push": {
+      "escalateIf": "TempTBD_CommitFailed.md",
+      "escalateKind": "ERROR"
+    }
+  }
+}

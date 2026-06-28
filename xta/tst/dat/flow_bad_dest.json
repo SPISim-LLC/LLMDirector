@@ -1,0 +1,12 @@
+{
+  "startTopic": "02: Critique_Spec",
+  "endTopic": "11: Ready_To_Commit",
+  "topics": {
+    "02: Critique_Spec": {
+      "nextTo": "99: Nonexistent_Topic"
+    },
+    "11: Ready_To_Commit": {
+      "action": "commit_approval"
+    }
+  }
+}

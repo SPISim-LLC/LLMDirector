@@ -1,0 +1,64 @@
+{
+  "startTopic": "02: Critique_Spec",
+  "endTopic": "11: Ready_To_Commit",
+  "questionsBackTo": "03: Answer_Update_Spec",
+  "questionsEscalateTopics": ["06: Review_Implementation", "08: Clarify_Review"],
+  "questionsSentinel": "TempTBD_Questions.md",
+  "entryTopics": [
+    "02: Critique_Spec",
+    "04: Implement_Spec",
+    "06: Review_Implementation",
+    "09: Address_Review",
+    "10: Update_Docs_And_Goldens"
+  ],
+  "topics": {
+    "02: Critique_Spec": {
+      "backIf": "TempTBD_Questions.md",
+      "backTo": "03: Answer_Update_Spec",
+      "nextTo": "04: Implement_Spec"
+    },
+    "03: Answer_Update_Spec": {
+      "escalateIf": "TempTBD_Questions.md",
+      "escalateKind": "QUESTION",
+      "nextTo": "02: Critique_Spec"
+    },
+    "04: Implement_Spec": {
+      "backIf": "TempTBD_Questions.md",
+      "backTo": "03: Answer_Update_Spec",
+      "nextTo": "05: Validate_Implementation"
+    },
+    "05: Validate_Implementation": {
+      "action": "validate",
+      "passTo": "06: Review_Implementation",
+      "failTo": "05: Validate_Implementation",
+      "loopCounter": "Validate"
+    },
+    "06: Review_Implementation": {
+      "backIf": "TempTBD_Review.md",
+      "backTo": "07: Critique_Review",
+      "nextTo": "10: Update_Docs_And_Goldens"
+    },
+    "07: Critique_Review": {
+      "nextIf": "TempTBD_ReviewQuestions.md",
+      "nextIfTo": "08: Clarify_Review",
+      "nextTo": "09: Address_Review",
+      "loopCounter": "CritiqueReview"
+    },
+    "08: Clarify_Review": {
+      "nextIf": "TempTBD_ReviewQuestions.md",
+      "nextIfTo": "07: Critique_Review",
+      "nextTo": "09: Address_Review",
+      "loopCounter": "CritiqueReview",
+      "incrementLoopCounter": true
+    },
+    "09: Address_Review": {
+      "nextTo": "05: Validate_Implementation"
+    },
+    "10: Update_Docs_And_Goldens": {
+      "nextTo": "11: Ready_To_Commit"
+    },
+    "11: Ready_To_Commit": {
+      "action": "commit_approval"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "startTopic": "02: Critique_Spec",
+  "endTopic": "11: Ready_To_Commit",
+  "topics": {
+    "02: Critique_Spec": {
+      "nextTo": "11: Ready_To_Commit"
+    },
+    "04: Implement_Spec": {
+      "nextTo": "05: Validate_Implementation"
+    },
+    "05: Validate_Implementation": {
+      "action": "validate",
+      "passTo": "11: Ready_To_Commit",
+      "failTo": "05: Validate_Implementation",
+      "loopCounter": "Validate"
+    },
+    "11: Ready_To_Commit": {
+      "action": "commit_approval"
+    }
+  }
+}

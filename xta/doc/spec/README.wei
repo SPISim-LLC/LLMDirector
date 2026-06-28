@@ -1,0 +1,3 @@
+20260531: Refactor* for Conductor and Director have been reviewed and are ready to run
+          Use Codex gpt-5.4-medium as developer, claude opus as architect.
+	  Copy *_FSD.md, *_CodeReview.md as Task_FSD.md and Task_CodeReview.md

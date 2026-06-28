@@ -1,0 +1,418 @@
+# FSD — Refactor LLMDirector to Drive Conductor In-Process
+
+> **Status:** Proposal (for later review). Author's preferred design for Task 2 —
+> "make Conductor a library, not a service." This document specifies the changes
+> required in the **Python LLMDirector** repo. The companion
+> `xta/doc/spec/Refactor_For_Conductor_FSD.md` (same repo as this file, *not* the
+> sibling `LLMConductor/` tree) specifies the matching LLMConductor changes.
+> **Appendix A of this document is the normative Director-side `conductor_core`
+> contract and is self-sufficient for Director acceptance**; the companion is the
+> cross-checked source of truth for the *Conductor implementation*. If a given
+> checkout lacks or lags the companion, this document is still complete via
+> Appendix A — a missing companion is not a defect in this spec. Nothing here is
+> implemented yet.
+
+---
+
+## 1. Purpose
+
+Replace the Director→Conductor **HTTP+token** calls with **in-process calls** into
+the `conductor_core` library (defined in the companion FSD). This removes the
+co-located network seam that produced the topic-key, lock-lifecycle, and
+"which-conductor" failures, while leaving the Director's FSM, event tailing,
+persistence, and web dashboard untouched.
+
+The blast radius is intentionally tiny: only the **five conductor-touching
+functions** in `web/app.py` change. Everything downstream of `dispatch()` —
+`transition()`, `detect_outcome()`, `check_for_event()`, `RunState`, the Flask
+dashboard — is unchanged.
+
+## 2. Scope
+
+**In scope (`LLMDirector/`):**
+- Swap the HTTP client calls for `conductor_core` calls in:
+  `get_conductor_url`, `get_conductor_config`, `acquire_token`, `release_token`,
+  `dispatch`, and the `/api/tmux` fallback in `get_tmux`.
+- Adopt the shared **topic-key contract** (full `"NN: Name"` keys, validated).
+- Use `conductor_core`'s **reclaim-on-restart** lock so a Director restart re-adopts
+  its own DRIVEN lock without a manual break-glass.
+- Update `LLMDirector.json` (drop `conductorUrl`; add import wiring) and the manual.
+
+**Out of scope:**
+- FSM topic graph, counters, stagnation logic, escalation kinds.
+- Event NDJSON format / hook helper / `RunState` persistence schema.
+- The Conductor internals (companion FSD).
+
+## 3. Current call sites (`web/app.py`)
+
+| Function | Today | Becomes |
+|---|---|---|
+| `get_conductor_url()` | returns `conductorUrl` | **deleted** (no URL) |
+| `get_conductor_config()` | `GET {url}/api/config` → local-file fallback | `conductor_core.get_config()` |
+| `acquire_token(run)` | `POST /api/control/take` | `core_lock.take("LLMDirector","local")` |
+| `release_token(run)` | `POST /api/control/release` (X-Token) | `core_lock.release(run.controller_token)` |
+| `dispatch(run, …)` | builds payload, `POST /api/dispatch` (X-Token) | `conductor_core.dispatch(cfg, project, target, run.node, message_override)` |
+| `get_tmux()` | local `tmux capture-pane`, else `GET /api/tmux` | local capture, else `conductor_core.capture_pane(prj, targ)` |
+
+## 4. Target design
+
+### 4.1 Wiring the import
+
+Add `…/LLMConductor` (reached via the existing `LLMDirector/LLMConductor`
+symlink) to `sys.path` at startup, then `import conductor_core`. A single
+module-level lock instance is shared across the Director process:
+
+```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "LLMConductor"))
+import conductor_core
+core_lock = conductor_core.DrivenLock()
+```
+
+**Requirement D-1.** If `conductor_core` cannot be imported, the Director MUST fail
+fast at startup with a clear message (it is now a hard dependency, not an optional
+remote service).
+
+### 4.2 Config / topic resolution
+
+`get_conductor_config()` collapses to the in-process call (the local-file fallback
+already lives inside `conductor_core` per companion §4.2):
+
+```python
+def get_conductor_config():
+    global _conductor_config_cache
+    if _conductor_config_cache is None:
+        _conductor_config_cache = conductor_core.get_config()
+    return _conductor_config_cache
+```
+
+**Requirement D-2.** The Director MUST dispatch using the **full** node string
+(`run.node`, e.g. `"02: Critique_Spec"`) and resolve role via
+`conductor_core.topic_role(cfg, run.node)`. Passing a stripped suffix is forbidden;
+`conductor_core` raises `UnknownTopic` if it ever happens (defense-in-depth against
+the original bug). This requirement is already satisfied by the current code
+(`topic_key = run.node`); the contract makes it permanent.
+
+### 4.3 Lock lifecycle (reclaim on restart)
+
+> **Resolved [PEER] Q1 (reclaim was self-contradictory).** An earlier draft
+> short-circuited on a persisted `run.controller_token` and *also* claimed `take()`
+> reclaim participated — but if the short-circuit returns, `take()` never runs, and
+> nothing verifies the persisted token against the actual lock. **Resolution:**
+> `acquire_token()` ALWAYS reconciles through `take()` and adopts the token it
+> returns; the persisted token is a resume *hint*, never authority.
+
+```python
+def acquire_token(run):
+    # Always reconcile against the real lock; never blindly trust a persisted token.
+    tok = core_lock.take("LLMDirector", "local")     # reclaim-by-controller (companion C-3)
+    if not tok:
+        return None                                  # a DIFFERENT controller holds it -> escalate
+    if tok != run.controller_token:                  # first take, or persisted token drifted
+        run.controller_token = tok; run.save()       # adopt the authoritative token
+    return tok
+
+def release_token(run):
+    if run and run.controller_token:
+        core_lock.release(run.controller_token)
+        run.controller_token = None; run.save()
+```
+
+**Requirement D-3.** On Director restart, `acquire_token()` MUST re-establish
+ownership by calling `core_lock.take("LLMDirector","local")` and adopting its result,
+**not** by short-circuiting on the persisted `controller_token`. Because `take()`
+reclaims by controller name (companion C-3) the three restart cases resolve cleanly:
+
+1. **Lock file still records `LLMDirector`** → the existing token is returned
+   (adopted if it drifted) → resume without `TOKEN_FAILED`, no break-glass.
+2. **Lock file cleared** (idle/broken) → a fresh token is minted and adopted → the
+   Director legitimately re-takes to resume its own run.
+3. **Lock held by a different controller** → `take()` returns `None` → the caller
+   escalates (D-8); the Director MUST NOT silently trust the stale persisted token.
+
+> The persisted `controller_token` remains a resume hint for diagnostics. Companion
+> `take()` MAY accept an optional `existing_token` argument to *detect* a drifted
+> token, but controller-name reclaim is sufficient for correctness; the optional
+> hint is defense-in-depth, not required.
+
+**Requirement D-3a.** `release_token()` is unchanged in shape; releasing with a token
+that no longer matches the lock is a safe no-op (companion `release` returns
+`False`).
+
+**Requirement D-11 (Q2 — reclaim safety rests on single-instance).** Reclaim by the
+fixed controller label `"LLMDirector"` is correct only under the invariant **at most
+one Director process per host**. That invariant is already enforced operationally:
+the Director binds `0.0.0.0:8081`, so a second instance on the same host fails to
+start (`EADDRINUSE`). The only entity that ever re-takes the `"LLMDirector"` lock is
+therefore a **restart of the same singleton** — exactly the reclaim case — and the
+Conductor's manual UI never takes with this label (it uses break-glass /
+`delete_lock`). The lock thus still means "one active controller," not merely "one
+controller label." **If this invariant is ever relaxed** to allow concurrent
+Directors, the controller identity MUST gain a stable per-instance component (e.g.
+`host:pid` or a persisted instance-id) with crash recovery via lock staleness /
+heartbeat — explicitly **out of scope for v1**, recorded here so the assumption is
+not silent.
+
+**Requirement D-4.** The §5.6 lock-release-on-last-terminal-run semantics
+(`release_if_last_run`) are unchanged; only the transport under `release_token`
+changes.
+
+### 4.4 Dispatch
+
+> **Resolved [PEER] Q2 (must execute immediately) and Q3 (failures must escalate,
+> not go to a bare terminal `ERROR`).** See D-6/D-8 below; the sketch is updated to
+> route every failure through the existing human-escalation helper.
+
+```python
+def _escalate(run, kind, detail=""):
+    # Mirrors transition()'s ERROR branch: recoverable, lock retained, operator notified.
+    if detail: log_decision(run, f"{kind}: {detail}")
+    run.status = "PAUSED_FOR_HUMAN"; run.escalation_kind = kind
+    notify_operator(run, kind); run.save()
+
+def dispatch(run, message_override=None):
+    cfg = get_conductor_config()
+    token = acquire_token(run)
+    if not token:
+        _escalate(run, "TOKEN_FAILED"); return
+    try:
+        role = conductor_core.topic_role(cfg, run.node)        # raises UnknownTopic on a bad key
+    except conductor_core.UnknownTopic as e:
+        _escalate(run, "ERROR", f"unknown topic {e}"); return
+    target = run.arch if role == "Architect" else run.dev
+    log_decision(run, "Dispatching " + run.node + " to " + target +
+                 (" (Override)" if message_override else ""))
+    event_file = get_event_file(run.cwd) if _config else None
+    offset = event_file.stat().st_size if event_file and event_file.exists() else 0
+    run.dispatch_marker = {"ts": datetime.utcnow().isoformat()+"Z", "offset": offset, "target": target}
+    run.status = "DISPATCHED_AWAITING_EVENT" if not message_override else "HUMAN_ANSWER_SENT_AWAITING_EVENT"
+    run.save()
+    try:
+        r = conductor_core.dispatch(cfg, run.project, target, run.node, message_override)
+        if not r.ok:
+            _escalate(run, "ERROR", f"dispatch failed: {r.error}")
+    except Exception as e:
+        _escalate(run, "ERROR", f"dispatch failed: {e}")
+```
+
+**Requirement D-5.** The dispatch **marker/offset bookkeeping** (watermark, marker
+timestamp, status transitions) MUST be preserved exactly — the event-tail logic in
+`check_for_event()` depends on it. Only the network POST is replaced by the
+in-process call. Note `topic_role()` is resolved **before** the marker is written, so
+an unknown-topic failure escalates without leaving a dangling awaiting-event marker.
+
+**Requirement D-6 (Q2 — execute immediately).** `conductor_core.dispatch()` MUST
+preserve the current DRIVEN semantics exactly: it forces `skip_pre_post=True` and
+**always executes immediately** (paste-buffer **then** `Enter`) via its
+`execute=True` default (companion §4.5/C-5). The Director relies on that default and
+passes neither `skipPrePost` nor `executeImmediately`. A library that left the
+message un-executed in the pane would strand the Director waiting forever for a
+turn-end event — this requirement forbids that.
+
+**Requirement D-8 (Q3 — failures escalate to a human, never a bare terminal
+status).** Token-acquisition failure, `UnknownTopic`, a `DispatchResult` with
+`ok=False`, and any other dispatch-path exception MUST route to the existing
+human-escalation path: `status = "PAUSED_FOR_HUMAN"`, a concrete `escalation_kind`,
+and `notify_operator()` — exactly like `transition()`'s `ERROR`-outcome branch. They
+MUST NOT set the terminal `status = "ERROR"` (which `release_if_last_run` treats as
+done and would drop the lock). Reuse the **existing** kinds — `TOKEN_FAILED` for the
+lock case and `ERROR` for topic/dispatch failures (with the specific cause in the
+decision log) — so no new escalation-kind vocabulary is introduced (keeping §2's
+"escalation kinds unchanged" intact).
+
+**Requirement D-10 (Q1 — `/api/answer` guard; `/api/resume` is *not* redefined).**
+Because D-8 routes runtime/config faults into `PAUSED_FOR_HUMAN`, `/api/answer` MUST
+become `escalation_kind`-aware. **That guard is the only new constraint in D-10.**
+`/api/resume`'s state machine is **not** changed by this FSD (it is out of scope per
+§2/§5); D-10 makes no per-kind claim about what resume does.
+
+- **`/api/answer` MUST return `400` unless `escalation_kind == "QUESTION"`.** A typed
+  human reply is only meaningful when the agent raised a question; for
+  `LOOP_CAP`/`MAX_TURNS`/`STAGNATION`/`TOKEN_FAILED`/`ERROR` there is no pending
+  agent question to paste a reply into.
+- **`/api/resume` keeps its existing mechanics verbatim**: it restores event-tailing
+  (`status → DISPATCHED_AWAITING_EVENT`) when a `dispatch_marker.ts` is present, else
+  re-dispatches, and already resets counters for `LOOP_CAP`/`MAX_TURNS`. There is
+  **no** "resume re-enters the turn" semantics for `QUESTION` — an earlier draft
+  claimed this and it was wrong against `resume_run` (web/app.py); the sanctioned ways
+  past a question are `/api/answer` or `/api/abort`.
+- `/api/abort` remains available for every kind.
+
+Operator guidance (informative — does **not** alter `resume_run`):
+
+| `escalation_kind` | Sanctioned progress action |
+|---|---|
+| `QUESTION` | `/api/answer` (paste the reply) — or `/api/abort` |
+| `LOOP_CAP`, `MAX_TURNS` | `/api/resume` (counters reset, continue) — or `/api/abort` |
+| `STAGNATION` | `/api/resume` (operator override) — or `/api/abort` |
+| `TOKEN_FAILED`, `ERROR` | Fix the external cause (start the tmux session, free the lock, correct the topic), then recover via the **existing** flows — see the note below for what `/api/resume` does and does not guarantee. `/api/abort` is the always-available fallback. A typed answer cannot repair the fault (hence the `/api/answer` guard). |
+
+> **`/api/resume` after a repair-required pause — what is and isn't guaranteed
+> (resolves [PEER] Q1, round 2).** This FSD does **not** change `resume_run`, so its
+> retry behavior for `TOKEN_FAILED`/`ERROR` is whatever the existing marker logic
+> already does: `/api/resume` re-dispatches **only** when `dispatch_marker.ts` is
+> empty (e.g. the fault hit the run's *first* dispatch, before any marker was
+> written); when a marker from a prior turn is still present it merely restores
+> `DISPATCHED_AWAITING_EVENT` and re-tails an event stream that will not recur. The
+> operator guidance above therefore promises **only** `/api/abort` as the guaranteed
+> recovery for these kinds; `/api/resume` is best-effort. Making
+> repair-required `/api/resume` always re-dispatch would require a `resume_run`
+> change that is **out of this FSD's blast radius** (§2/§5) and is recorded here as a
+> tracked follow-up — not a requirement of this document.
+
+### 4.5 tmux capture fallback
+
+```python
+@app.route('/api/tmux', methods=['GET'])
+def get_tmux():
+    prj = request.args.get('project'); targ = request.args.get('target')
+    try:
+        out = subprocess.run(['tmux','capture-pane','-t',f"{targ}_{prj}",'-p'],
+                             capture_output=True, text=True, check=True).stdout
+        return jsonify({"output": out})
+    except Exception:
+        try:
+            return jsonify({"output": conductor_core.capture_pane(prj, targ)})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 502
+```
+
+(The Director and Conductor run on the same host, so the local `tmux capture-pane`
+path normally succeeds; the `conductor_core` call is the parity fallback.)
+
+### 4.6 Config file & docs
+
+- `LLMDirector.json`: **remove** `conductorUrl`. Keep `conductorJsonPath` (still the
+  config-fallback source consumed *inside* `conductor_core`). Optionally add
+  `"conductorCorePath"` if the symlink-based import is replaced by an explicit path.
+- `LLMDirector.md`: update §1 Prerequisites ("Conductor running on 8080" → "the
+  `conductor_core` library is importable; the Conductor **web app** is optional and
+  only needed for the manual viewer"), §2 Configuration, §9 Conductor lock (reclaim
+  note), and the port map.
+
+**Requirement D-7.** Removing the HTTP dependency MUST mean the Director can drive a
+full run with the **Conductor web app not running at all**.
+
+## 5. What explicitly does NOT change
+
+- `transition()` and the entire FSM topic graph, counters, `loopCap`, stagnation,
+  escalation kinds.
+- `detect_outcome()`, `detect_stagnation()`, `check_for_event()`, `tail_events()`.
+- `RunState` schema, `save()/load()`, watermark/marker semantics.
+- Hook preflight/install/uninstall, the event NDJSON contract, `LLMHookEvent.sh`.
+- The web dashboard and its route URLs / request-response schemas, **except** two
+  additive, shape-preserving changes already specified: the `/api/tmux` fallback body
+  (§4.5) and the `escalation_kind` precondition guard on `/api/answer` (D-10).
+  `/api/resume` and the status-label mapping are unchanged.
+
+## 6. Migration steps
+
+1. Land the companion `conductor_core` library first (Conductor FSD).
+2. Add the import wiring + `core_lock` (§4.1).
+3. Replace the five call sites (§4.2–§4.5); delete `get_conductor_url` and the
+   `requests` import if otherwise unused.
+4. Update `LLMDirector.json` + manual (§4.6).
+5. Run the unit suite, then the dry-run, with the Conductor web app **stopped**.
+
+## 7. Test plan
+
+- **Unit (`xta/tst/RunTest.py`):** keep the existing 44 tests. Replace HTTP-mock
+  tests (`TestHTTPAuthProtocol`, which assert X-Token header behavior) with
+  in-process equivalents that assert `conductor_core.dispatch` / `core_lock` are
+  invoked with the right arguments (patch `conductor_core`). Token "header vs body"
+  tests become moot once there is no HTTP — replace with a test asserting the lock
+  token never leaves the process.
+- **New tests:**
+  - `dispatch` resolves role/target from the full node key and calls
+    `conductor_core.dispatch` once with `run.node` (D-2/D-5).
+  - `dispatch` invokes the library with immediate execution (the default
+    `execute=True`); a stubbed library that does not execute leaves the run
+    awaiting an event — the test asserts the Director passes no flag and relies on
+    the executing default (D-6).
+  - `acquire_token` reconciles through `take()` on a simulated restart and adopts
+    the returned token (no short-circuit), resuming without `TOKEN_FAILED`; a
+    foreign-controller lock makes it escalate (D-3).
+  - An unknown/short topic key escalates to `PAUSED_FOR_HUMAN` (kind `ERROR`) with
+    `notify_operator` fired — **not** a terminal `status="ERROR"` and **not** a
+    silent empty dispatch (D-8).
+- **End-to-end:** the dry-run reaches DONE (Conductor FSD §7) with no Conductor web
+  process; the live run observed during Task 1 (20 turns, human escalation →
+  answer → resume → Ready_To_Commit) reproduces in-process.
+
+## 8. Risks & mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Hard import dependency on the sibling repo | Fail-fast at startup (D-1); document the symlink; offer installable-package path. |
+| Losing the manual Conductor UI as a remote viewer | It remains available as a separate optional process over the same lock file + tmux (companion §4.7). |
+| HTTP-auth tests become irrelevant | Rewrite as in-process invocation/argument assertions (§7); net test count preserved. |
+| Two processes both driving tmux if the human opens the Conductor UI mid-run | Lock file gates DRIVEN; Conductor `/api/send` already refuses while locked. |
+
+## 9. Acceptance criteria
+
+1. The five conductor-touching functions call `conductor_core` in-process; no
+   `requests` call to the Conductor remains.
+2. The Director drives a full dry-run to DONE with the Conductor **web app not
+   running**.
+3. A Director restart mid-run resumes via lock reclaim (`acquire_token` reconciles
+   through `take()`) — no `TOKEN_FAILED`, no manual break-glass; a foreign-controller
+   lock escalates instead of trusting the stale token.
+4. A short/unknown topic key fails loudly as a `PAUSED_FOR_HUMAN` escalation (kind
+   `ERROR`, operator notified) — never a terminal `ERROR` status and never an empty
+   dispatch.
+5. Dispatch always executes immediately in-process (no message left un-sent in the
+   pane).
+6. The existing FSM/persistence/event behavior is byte-for-byte unchanged
+   (unit suite green; dry-run trace matches Task 1).
+
+---
+
+## Appendix A — Imported `conductor_core` contract (authoritative: companion FSD)
+
+The Director depends on exactly this surface. **This appendix is normative for the
+Director side and self-sufficient for Director acceptance.** The companion
+`Refactor_For_Conductor_FSD.md` (§4.2–§4.5) is the cross-checked source of truth for
+the *Conductor implementation*; if the two ever drift, that is a defect to reconcile
+— neither silently wins.
+
+```python
+# config / topics
+get_config() -> dict                       # cached; local-file fallback lives inside core
+topic_role(cfg, key) -> str                # "Architect" | "Developer"; raises UnknownTopic
+topic_message(cfg, key) -> str             # raises UnknownTopic on unknown/short key
+class UnknownTopic(KeyError): ...
+
+# lock (one shared DrivenLock instance per process, backed by ~/.llmconductor/driven.lock)
+DrivenLock().take(controller, host) -> str | None   # reclaim same controller; None if held by another
+DrivenLock().release(token) -> bool                 # False if token no longer matches
+DrivenLock().is_valid(token) -> bool
+DrivenLock().status() -> dict
+DrivenLock().break_glass() -> None
+
+# dispatch / tmux
+dispatch(cfg, project, target, topic, message_override=None, execute=True) -> DispatchResult
+#   forces skip_pre_post=True; execute=True ⇒ paste-buffer THEN Enter (immediate)
+capture_pane(project, target) -> str
+session_exists(project, target) -> bool
+
+@dataclass
+class DispatchResult:
+    ok: bool
+    session: str | None = None
+    composed: str | None = None
+    error: str | None = None
+```
+
+**Contract assumptions the Director relies on (each traces to a companion
+requirement):**
+
+- `topic_role`/`topic_message` raise `UnknownTopic` on a bad key (companion C-1) →
+  Director maps to escalation (D-8).
+- `take()` reclaims by controller name (companion C-3) → Director restart recovery
+  (D-3).
+- `dispatch()` forces `skip_pre_post=True` and executes immediately (companion
+  C-5/§4.5) → Director D-6.
+- `dispatch()` returns `DispatchResult(ok=False, error=…)` (not an exception) when
+  the tmux session is missing (companion §4.5) → Director D-8 treats `ok=False` as an
+  escalation.

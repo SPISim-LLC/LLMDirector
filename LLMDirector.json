@@ -1,0 +1,14 @@
+{
+  "conductorJsonPath": "LLMConductor/LLMConductor.json",
+  "directorFlowJsonPath": "LLMDirector_Flow.json",
+  "eventDir": "~/.llmdirector/events",
+  "logDir": "~/.llmdirector/logs",
+  "dispatchEventPrompt": {
+    "initialWaitSec": 10
+  },
+  "limits": { "maxTurns": 50, "loopCap": 5, "turnTimeoutSec": 7200, "validationTimeoutSec": 1200, "tailPollSec": 5 },
+  "notifyScript": "~/batch/LLMNotify.bat $TARG $TOPIC $KIND",
+  "serverPort": 8081,
+  "Hook": "~/batch/LLMHookEvent.sh",
+  "HumanNotifyScript": "~/batch/LLMNotify.bat"
+}

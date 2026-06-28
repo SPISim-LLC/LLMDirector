@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+web/__pycache__/
+
+# Runtime Director state (populated at run time, not source)
+~/.llmdirector/
+
+# Conductor activity log (written CWD-relative at run time, not source)
+xta/log/conductor.log
+
+# Editor
+*.swp
+*.swo
+.DS_Store
+
+# LLMDirector Generated Artifacts
+web/xta/
+*.state.json

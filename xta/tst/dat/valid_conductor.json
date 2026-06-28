@@ -1,0 +1,31 @@
+{
+  "Project": ["TST"],
+  "Target": ["ARCH_T", "DEV_T"],
+  "Default": {
+    "Pre-Script": "",
+    "Pre-Prompt": ["You are a test agent."],
+    "Post-Prompt": []
+  },
+  "Topic": [
+    "02: Critique_Spec",
+    "03: Answer_Update_Spec",
+    "04: Implement_Spec",
+    "05: Validate_Implementation",
+    "06: Review_Implementation",
+    "07: Critique_Review",
+    "08: Clarify_Review",
+    "09: Address_Review",
+    "10: Update_Docs_And_Goldens",
+    "11: Ready_To_Commit"
+  ],
+  "02: Critique_Spec":           {"Role": "Developer",  "Desc": "Critique", "Mesg": ["Read Task_FSD.md. Write TempTBD_Questions.md if questions exist."]},
+  "03: Answer_Update_Spec":      {"Role": "Architect",  "Desc": "Answer",   "Mesg": ["Answer questions in TempTBD_Questions.md then delete it."]},
+  "04: Implement_Spec":          {"Role": "Developer",  "Desc": "Implement","Mesg": ["Implement Task_FSD.md. Write TempTBD_Questions.md if unclear."]},
+  "05: Validate_Implementation": {"Role": "Developer",  "Desc": "Validate", "Mesg": ["Run tests."]},
+  "06: Review_Implementation":   {"Role": "Architect",  "Desc": "Review",   "Mesg": ["Review code. Write TempTBD_Review.md with findings."]},
+  "07: Critique_Review":         {"Role": "Developer",  "Desc": "Critique", "Mesg": ["Read TempTBD_Review.md. Write TempTBD_ReviewQuestions.md if unclear."]},
+  "08: Clarify_Review":          {"Role": "Architect",  "Desc": "Clarify",  "Mesg": ["Answer TempTBD_ReviewQuestions.md. Update TempTBD_Review.md."]},
+  "09: Address_Review":          {"Role": "Developer",  "Desc": "Address",  "Mesg": ["Address TempTBD_Review.md findings."]},
+  "10: Update_Docs_And_Goldens": {"Role": "Developer",  "Desc": "Docs",     "Mesg": ["Update docs."]},
+  "11: Ready_To_Commit":         {"Role": "Developer",  "Desc": "Commit",   "Mesg": ["Prepare commit."]}
+}

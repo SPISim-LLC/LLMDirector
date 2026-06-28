@@ -1,0 +1,9 @@
+{
+  "conductorJsonPath": "valid_conductor.json",
+  "directorFlowJsonPath": "valid_flow.json",
+  "eventDir": "/tmp/llm_test_events",
+  "logDir": "/tmp/llm_test_logs",
+  "limits": {"maxTurns": 40, "loopCap": 5, "turnTimeoutSec": 1200},
+  "Hook": "~/batch/LLMHookEvent.sh",
+  "HumanNotifyScript": "~/batch/LLMWaiting.bat"
+}

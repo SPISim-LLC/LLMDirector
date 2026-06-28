@@ -1,0 +1,23 @@
+{
+  "project": "TST",
+  "cwd": "/tmp/tst_project",
+  "arch": "ARCH_T",
+  "dev": "DEV_T",
+  "node": "05: Validate_Implementation",
+  "status": "DISPATCHED_AWAITING_EVENT",
+  "total_turns": 3,
+  "started_at": "2026-06-02T10:00:00Z",
+  "roles_initialized": {"Developer": true, "Architect": true},
+  "pending_workflow_node": null,
+  "counters": {"Validate": 1, "CritiqueReview": 0},
+  "history": [
+    "2026-0602-100001 | Dispatching 02: Critique_Spec to DEV_T",
+    "2026-0602-100100 | Transition from 02: Critique_Spec (turn 1)",
+    "2026-0602-100200 | Dispatching 04: Implement_Spec to DEV_T"
+  ],
+  "watermark": 512,
+  "dispatch_marker": {"ts": "2026-06-02T10:02:00Z", "offset": 512, "target": "DEV_T"},
+  "controller_token": null,
+  "escalation_kind": null,
+  "stagnation_hashes": {}
+}

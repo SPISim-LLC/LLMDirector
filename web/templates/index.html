@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>[SPISim] LLMDirector</title>
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .run-card { border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px; }
+    .run-card h5 { font-size: 1rem; word-break: break-word; }
+    .run-card small { font-size: 0.75rem; word-break: break-all; }
+    .run-card code { font-size: 0.85rem; word-break: break-all; }
+    .run-card strong { font-size: 0.95rem; }
+    .status-badge { font-size: 0.8rem; padding: 5px 10px; border-radius: 12px; white-space: nowrap; }
+    .log-area { font-family: monospace; font-size: 0.85rem; height: 180px; overflow-y: scroll; background: #f8f9fa; border: 1px solid #eee; padding: 10px; white-space: pre-wrap; word-break: break-all; resize: vertical; }
+    .tmux-preview { background: #000; color: #0f0; font-family: monospace; font-size: 0.75rem; height: 400px; overflow: auto; padding: 10px; white-space: pre-wrap; word-break: break-all; }
+    .md-view { font-family: sans-serif; font-size: 0.85rem; background: #fff; border: 1px solid #ccc; padding: 10px; height: 300px; overflow: auto; word-break: break-word; }
+    .progress-bar-thin { height: 6px; }
+    .config-error-panel { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid py-4">
+  <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+    <h2 class="d-flex align-items-center">
+      <img src="/logo.png" alt="Logo" style="height: 1.2em; vertical-align: middle; margin-right: 12px;">
+      [SPISim] LLMDirector
+    </h2>
+    <div class="d-flex gap-2">
+      <button class="btn btn-outline-secondary" onclick="refresh()">Refresh</button>
+      <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newRunModal">New Run</button>
+    </div>
+  </div>
+
+  <div id="configError"></div>
+  <div id="runs" class="row"></div>
+</div>
+
+<!-- Start New Run Modal -->
+<div class="modal fade" id="newRunModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Start New Run</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3"><label class="form-label">Project</label><select id="project" class="form-select" onchange="checkRunReady()"></select></div>
+        <div class="mb-3"><label class="form-label">Architect Target</label><select id="arch" class="form-select" onchange="checkRunReady()"></select></div>
+        <div class="mb-3"><label class="form-label">Developer Target</label><select id="dev" class="form-select" onchange="checkRunReady()"></select></div>
+        <div class="mb-3"><label class="form-label">Start Topic</label><select id="startTopic" class="form-select" onchange="updateStartWarn()"></select>
+          <small id="startTopicWarn" class="d-block mt-1"></small></div>
+        <div class="mb-2"><label class="form-label">When</label>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="startMode" id="startNow" value="now" checked onchange="updateScheduleEnabled()">
+            <label class="form-check-label" for="startNow">Start now</label>
+          </div>
+          <div class="form-check d-flex align-items-center gap-2">
+            <input class="form-check-input" type="radio" name="startMode" id="startAt" value="scheduled" onchange="updateScheduleEnabled()">
+            <label class="form-check-label" for="startAt">Start at:</label>
+            <select id="scheduleHour" class="form-select form-select-sm" style="width:auto" disabled></select>
+            <span>:</span>
+            <select id="scheduleMinute" class="form-select form-select-sm" style="width:auto" disabled></select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" id="btnStartRun" disabled onclick="startRun()">Start Run</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Escalation / Answer Modal -->
+<div class="modal fade" id="answerModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">Human Escalation</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <h6 id="answerFileTitle">Sentinel file: </h6>
+        <div id="mdContent" class="md-view mb-3"></div>
+        <div class="mb-3">
+          <label class="form-label">Your Answer (composed with original topic prompt):</label>
+          <textarea id="answerText" class="form-control" rows="5"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button class="btn btn-success" id="btnSendAnswer">Send Answer</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Stagnation Alert Modal -->
+<div class="modal fade" id="stagnationModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog">
+    <div class="modal-content border-warning">
+      <div class="modal-header bg-warning text-dark">
+        <h5 class="modal-title">&#9888; Stagnation — Action Required</h5>
+      </div>
+      <div class="modal-body">
+        <p>The run is stuck because the following file(s) were not changed by the last turn and are still blocking progress:</p>
+        <pre id="stagnationFiles" class="bg-light border rounded p-2 mb-2" style="font-size:0.9rem"></pre>
+        <p class="text-muted mb-0" style="font-size:0.85rem">Delete the file(s) and continue to the next step? Closing this dialog leaves the run paused — you can click Resume again later.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-warning" id="btnStagnationResume">Delete file(s) &amp; continue</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Resume (PAUSED_BY_USER) Modal -->
+<div class="modal fade" id="resumeModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Resume Run</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="resumeMode" id="resumeNow" value="now" checked onchange="updateResumeScheduleEnabled()">
+            <label class="form-check-label" for="resumeNow">Resume now</label>
+          </div>
+          <div class="form-check d-flex align-items-center gap-2">
+            <input class="form-check-input" type="radio" name="resumeMode" id="resumeAt" value="scheduled" onchange="updateResumeScheduleEnabled()">
+            <label class="form-check-label" for="resumeAt">Resume on</label>
+            <select id="resumeHour" class="form-select form-select-sm" style="width:auto" disabled></select>
+            <span>:</span>
+            <select id="resumeMinute" class="form-select form-select-sm" style="width:auto" disabled></select>
+          </div>
+        </div>
+        <hr class="my-2">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" id="resumeSendCheck" onchange="updateResumeSendEnabled()">
+          <label class="form-check-label" for="resumeSendCheck">Command to send <span id="resumeTargetLabel" class="badge bg-secondary ms-1"></span></label>
+        </div>
+        <input type="text" id="resumeSendText" class="form-control form-control-sm" value="continue" disabled>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-danger" id="btnClearSchedule" style="display:none" onclick="clearSchedule()">Clear Schedule</button>
+        <button class="btn btn-success" id="btnConfirmResume" onclick="confirmResume()">Resume</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tmux Preview Modal -->
+<div class="modal fade" id="tmuxModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content bg-dark text-light">
+      <div class="modal-header border-secondary"><h5 class="modal-title" id="tmuxTitle">tmux screen</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body p-0"><div id="tmuxContent" class="tmux-preview"></div></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let conductorConfig = null;
+const logHeights = {};
+let lastRuns = [];  // cached from most recent /api/runs fetch
+
+function fmtElapsed(secs) {
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+  return Math.floor(secs/3600) + 'h ' + Math.floor((secs%3600)/60) + 'm';
+}
+
+function fmtSchedule(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const pad = n => String(n).padStart(2, '0');
+  const today = new Date();
+  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return sameDay ? `today ${time}` : `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${time}`;
+}
+
+function progressBar(val, max, label, colorClass) {
+  const pct = max > 0 ? Math.min(100, Math.round(val/max*100)) : 0;
+  return `<div class="mb-1"><small class="text-muted">${label}: ${val}/${max}</small>
+    <div class="progress progress-bar-thin"><div class="progress-bar ${colorClass}" style="width:${pct}%"></div></div></div>`;
+}
+
+async function loadDiscovery() {
+  try {
+    const res = await fetch('/api/conductor-config');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    conductorConfig = await res.json();
+    if (conductorConfig.flowConfigError) {
+      document.getElementById('configError').innerHTML =
+        `<div class="config-error-panel"><strong>⚠ Flow config error — new runs blocked:</strong><pre class="mb-0 mt-2" style="font-size:0.8rem">${conductorConfig.flowConfigError}</pre></div>`;
+    } else {
+      document.getElementById('configError').innerHTML = '';
+    }
+    if (conductorConfig.error) throw new Error(conductorConfig.error);
+    document.getElementById('project').innerHTML = (conductorConfig.Project || []).map(p => `<option value="${p}">${p}</option>`).join('');
+    document.getElementById('arch').innerHTML = (conductorConfig.Target || []).map(t => `<option value="${t}">${t}</option>`).join('');
+    document.getElementById('dev').innerHTML = (conductorConfig.Target || []).map((t, i) => `<option value="${t}" ${i === 1 ? 'selected' : ''}>${t}</option>`).join('');
+    const entries = conductorConfig.flowEntryTopics || [];
+    document.getElementById('startTopic').innerHTML = entries.map(t =>
+      `<option value="${t}" ${t === conductorConfig.flowStartTopic ? 'selected' : ''}>${t}</option>`).join('');
+    updateStartWarn();
+    populateScheduleSelects();
+    if (!(conductorConfig.Project || []).length) throw new Error('No projects found in LLMConductor.json');
+    checkRunReady();
+  } catch (e) {
+    console.error('Discovery failed', e);
+    document.getElementById('project').innerHTML = `<option disabled>Error: ${e.message}</option>`;
+    checkRunReady();
+  }
+}
+
+async function refresh() {
+  const res = await fetch('/api/runs');
+  const runs = await res.json();
+  lastRuns = runs;
+  document.querySelectorAll('.log-area[data-cwd]').forEach(el => {
+    if (el.style.height) logHeights[el.dataset.cwd] = el.style.height;
+  });
+  document.getElementById('runs').innerHTML = runs.map(r => {
+    const p = r.progress || {};
+    const statusColor = r.status === 'DONE' ? 'success' : (r.status.includes('PAUSED') ? 'warning' : (r.status === 'SCHEDULED' ? 'info' : 'primary'));
+    const topicBar = (p.topicTotal > 0 && p.topicStep >= 0)
+      ? progressBar(p.topicStep, p.topicTotal, 'Topic', 'bg-info')
+      : (p.offPath ? '<small class="text-muted">Topic: off-path (retrying)</small><br>' : '');
+    const turnsBar = progressBar(p.totalTurns || 0, p.maxTurns || 40, 'Turns', 'bg-secondary');
+    const loopLine = (p.loopCounter && p.loopVal !== null && p.loopVal !== undefined)
+      ? progressBar(p.loopVal, p.loopCap || 5, p.loopCounter, 'bg-warning') : '';
+    const elapsed = p.elapsedSec !== undefined ? `<small class="text-muted">Elapsed: ${fmtElapsed(p.elapsedSec)} · Started: ${p.startedAt || ''}</small><br>` : '';
+    const terminal = ['DONE','ABORTED','ERROR'].includes(r.status);
+    const topicElapsed = (!terminal && p.topicElapsedSec !== undefined && p.topicElapsedSec !== null)
+      ? ` <small class="text-muted">· in topic ${fmtElapsed(p.topicElapsedSec)}</small>` : '';
+    const valElapsed = (p.validationElapsedSec !== undefined && p.validationElapsedSec !== null)
+      ? ` <strong>${fmtElapsed(p.validationElapsedSec)}</strong>` : '';
+    const validating = p.validating
+      ? `<div class="mb-1"><span class="badge bg-dark text-white">⚙ Director</span> <small class="text-muted">running validation gate <code>RunTest.py</code> for${valElapsed}</small></div>`
+      : '';
+    return `
+    <div class="col-12">
+      <div class="run-card shadow-sm">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div><h5 class="mb-0">${r.project}</h5><small class="text-muted d-block text-truncate" style="max-width:200px" title="${r.cwd}">${r.cwd}</small></div>
+          <span class="status-badge bg-${statusColor} text-white">${r.status}</span>
+        </div>
+        <div class="mb-1"><strong>State:</strong> <code>${r.node}</code>${topicElapsed}</div>
+        ${validating}
+        ${r.status === 'SCHEDULED' && r.scheduled_for ? `<div class="mb-1"><span class="badge bg-info text-dark">Scheduled</span> <small>starts ${fmtSchedule(r.scheduled_for)}</small></div>` : ''}
+        ${r.status === 'PAUSED_BY_USER' && r.resume_at ? `<div class="mb-1"><span class="badge bg-info text-dark">Scheduled Resume</span> <small>resumes ${fmtSchedule(r.resume_at)}</small></div>` : ''}
+        ${r.status === 'PAUSED_FOR_HUMAN' && r.escalation_detail ? `<div class="mb-1"><span class="badge bg-warning text-dark">${r.escalation_kind}</span> <small>${r.escalation_detail}</small></div>` : ''}
+        ${elapsed}
+        <div class="mb-2">${topicBar}${turnsBar}${loopLine}</div>
+        <div class="log-area mb-3" data-cwd="${r.cwd}"${logHeights[r.cwd] ? ` style="height:${logHeights[r.cwd]}"` : ''}>${[...r.history].reverse().map(h => `<div>${h}</div>`).join('')}</div>
+        <div class="d-flex flex-wrap gap-2">
+           <button class="btn btn-xs btn-outline-info" onclick="showTmux('${r.project}', '${r.arch}', '${r.cwd}')">Arch</button>
+           <button class="btn btn-xs btn-outline-info" onclick="showTmux('${r.project}', '${r.dev}', '${r.cwd}')">Dev</button>
+           ${r.status === 'PAUSED_FOR_HUMAN' && r.escalation_kind === 'QUESTION' ? `<button class="btn btn-xs btn-success" onclick="showAnswerModal('${r.cwd}')">Answer</button>` : ''}
+           ${r.status === 'PAUSED_FOR_HUMAN' && r.escalation_kind === 'STAGNATION' ? `<button class="btn btn-xs btn-warning" onclick="resumeStagnation('${r.cwd}')">Resume</button>` : ''}
+           ${r.status === 'PAUSED_BY_USER' ? `<button class="btn btn-xs btn-success" onclick="showResumeModal('${r.cwd}')">Resume</button>` :
+             (r.status === 'PAUSED_FOR_HUMAN' && r.escalation_kind !== 'QUESTION' && r.escalation_kind !== 'STAGNATION' ?
+             `<button class="btn btn-xs btn-success" onclick="action('resume', '${r.cwd}')">${r.escalation_kind === 'COMMIT_APPROVAL' ? 'Approve Commit' : 'Resume'}</button>` :
+             (!r.status.includes('PAUSED') && r.status !== 'SCHEDULED' && !['DONE','ABORTED','ERROR'].includes(r.status) ? `<button class="btn btn-xs btn-warning" onclick="action('pause', '${r.cwd}')">Pause</button>` : ''))}
+           ${['DONE','ABORTED','ERROR'].includes(r.status) ?
+             `<button class="btn btn-xs btn-secondary" onclick="action('conclude', '${r.cwd}')">Conclude</button>` :
+             `<button class="btn btn-xs btn-danger" onclick="action('abort', '${r.cwd}')">Abort</button>`}
+        </div>
+      </div>
+    </div>`;
+  }).join('') || '<div class="col-12 text-center text-muted">No active runs.</div>';
+}
+
+async function action(name, cwd) {
+  const res = await fetch(`/api/${name}`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cwd}) });
+  const data = await res.json();
+  if (data.ok) refresh(); else alert('Error: ' + data.error);
+}
+
+async function showAnswerModal(cwd) {
+  try {
+    const run = lastRuns.find(r => r.cwd === cwd);
+    const sentinel = (run && run.progress && run.progress.questionsSentinel)
+      ? run.progress.questionsSentinel : 'TempTBD_Questions.md';
+    const res = await fetch(`/api/md?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(sentinel)}`);
+    const data = await res.text();
+    document.getElementById('mdContent').textContent = data;
+    document.getElementById('answerFileTitle').textContent = `Sentinel file: ${sentinel}`;
+    document.getElementById('btnSendAnswer').onclick = () => sendAnswer(cwd);
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('answerModal')).show();
+  } catch (e) { alert('Failed to load questions'); }
+}
+
+async function resumeStagnation(cwd) {
+  // Phase 1: ask the backend to resume. If the blocking sentinel file is already
+  // gone it advances silently; otherwise it asks for permission to delete it.
+  const res = await fetch('/api/resume', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cwd}) });
+  const data = await res.json();
+  if (data.needs_confirmation) {
+    showStagnationModal(cwd, data.files || []);
+  } else if (data.ok) {
+    refresh();
+  } else {
+    alert('Error: ' + (data.error || 'resume failed'));
+  }
+}
+
+function showStagnationModal(cwd, files) {
+  document.getElementById('stagnationFiles').textContent = (files || []).join('\n');
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('stagnationModal'));
+  // Phase 2: human grants permission to delete the sentinel and continue.
+  document.getElementById('btnStagnationResume').onclick = async () => {
+    modal.hide();
+    const res = await fetch('/api/resume', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cwd, delete: true}) });
+    const data = await res.json();
+    if (data.ok) refresh(); else alert('Error: ' + (data.error || 'resume failed'));
+  };
+  modal.show();
+}
+
+async function sendAnswer(cwd) {
+  const answer = document.getElementById('answerText').value;
+  const res = await fetch('/api/answer', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cwd, answer}) });
+  const data = await res.json();
+  if (data.ok) { bootstrap.Modal.getInstance(document.getElementById('answerModal')).hide(); refresh(); } else alert(data.error);
+}
+
+function updateStartWarn() {
+  const sel = document.getElementById('startTopic');
+  const warn = document.getElementById('startTopicWarn');
+  if (!sel || !warn) return;
+  if (conductorConfig && sel.value && sel.value !== conductorConfig.flowStartTopic) {
+    warn.textContent = '⚠ Starting mid-pipeline assumes prior phases’ artifacts ' +
+      '(code, validation state, TempTBD_* files) already exist in the working folder.';
+    warn.className = 'd-block mt-1 text-warning';
+  } else {
+    warn.textContent = '';
+    warn.className = 'd-block mt-1';
+  }
+}
+
+function checkRunReady() {
+  const project = document.getElementById('project').value;
+  const arch    = document.getElementById('arch').value;
+  const dev     = document.getElementById('dev').value;
+  const ready = project && arch && dev && !project.startsWith('Error') && arch !== dev
+    && !(conductorConfig && conductorConfig.flowConfigError);
+  document.getElementById('btnStartRun').disabled = !ready;
+  document.getElementById('btnStartRun').title = (arch && dev && arch === dev)
+    ? 'Architect and Developer must be different targets'
+    : (conductorConfig && conductorConfig.flowConfigError ? 'Flow config error — fix before starting' : '');
+}
+
+let scheduleSelectsReady = false;
+function populateScheduleSelects() {
+  if (scheduleSelectsReady) return;
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('scheduleHour').innerHTML =
+    Array.from({length: 24}, (_, h) => `<option value="${h}">${pad(h)}</option>`).join('');
+  document.getElementById('scheduleMinute').innerHTML =
+    Array.from({length: 60}, (_, m) => `<option value="${m}">${pad(m)}</option>`).join('');
+  scheduleSelectsReady = true;
+}
+function updateScheduleEnabled() {
+  const scheduled = document.getElementById('startAt').checked;
+  document.getElementById('scheduleHour').disabled = !scheduled;
+  document.getElementById('scheduleMinute').disabled = !scheduled;
+}
+
+async function startRun() {
+  const project = document.getElementById('project').value;
+  const arch    = document.getElementById('arch').value;
+  const dev     = document.getElementById('dev').value;
+  const startTopic = document.getElementById('startTopic').value;
+  const startMode = document.getElementById('startAt').checked ? 'scheduled' : 'now';
+  const payload = {project, arch, dev, startTopic, startMode};
+  if (startMode === 'scheduled') {
+    payload.scheduleHour = parseInt(document.getElementById('scheduleHour').value, 10);
+    payload.scheduleMinute = parseInt(document.getElementById('scheduleMinute').value, 10);
+  }
+  const btn = document.getElementById('btnStartRun');
+  btn.disabled = true; btn.textContent = startMode === 'scheduled' ? 'Scheduling…' : 'Starting…';
+  try {
+    const res = await fetch('/api/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('newRunModal')).hide();
+      refresh();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Start failed: ' + e.message);
+  } finally {
+    // Always restore the button label; checkRunReady() owns the disabled state
+    // based on form readiness. Without this the success path leaves the button
+    // stuck on "Starting…"/disabled for the next time the modal opens.
+    btn.textContent = 'Start Run';
+    checkRunReady();
+  }
+}
+
+async function showTmux(project, target, cwd) {
+  try {
+    const res = await fetch(`/api/tmux?project=${project}&target=${target}&cwd=${cwd}`);
+    const data = await res.json();
+    document.getElementById('tmuxTitle').textContent = `tmux: ${target}_${project} (${cwd})`;
+    document.getElementById('tmuxContent').textContent = data.output;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('tmuxModal')).show();
+  } catch (e) { alert('Failed to fetch tmux: ' + e); }
+}
+
+let _resumeCwd = null;
+let resumeSelectsReady = false;
+
+function populateResumeSelects() {
+  if (resumeSelectsReady) return;
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('resumeHour').innerHTML =
+    Array.from({length: 24}, (_, h) => `<option value="${h}">${pad(h)}</option>`).join('');
+  document.getElementById('resumeMinute').innerHTML =
+    Array.from({length: 60}, (_, m) => `<option value="${m}">${pad(m)}</option>`).join('');
+  resumeSelectsReady = true;
+}
+
+function updateResumeScheduleEnabled() {
+  const scheduled = document.getElementById('resumeAt').checked;
+  document.getElementById('resumeHour').disabled = !scheduled;
+  document.getElementById('resumeMinute').disabled = !scheduled;
+  document.getElementById('btnConfirmResume').textContent = scheduled ? 'Schedule Resume' : 'Resume';
+}
+
+function updateResumeSendEnabled() {
+  document.getElementById('resumeSendText').disabled = !document.getElementById('resumeSendCheck').checked;
+}
+
+function showResumeModal(cwd) {
+  _resumeCwd = cwd;
+  const run = lastRuns.find(r => r.cwd === cwd);
+  const target = (run && run.dispatch_marker && run.dispatch_marker.target) ? run.dispatch_marker.target : '';
+  populateResumeSelects();
+  // Reset to defaults
+  document.getElementById('resumeNow').checked = true;
+  document.getElementById('resumeAt').checked = false;
+  document.getElementById('resumeHour').disabled = true;
+  document.getElementById('resumeMinute').disabled = true;
+  document.getElementById('resumeSendCheck').checked = false;
+  document.getElementById('resumeSendText').value = 'continue';
+  document.getElementById('resumeSendText').disabled = true;
+  document.getElementById('resumeTargetLabel').textContent = target || '?';
+  document.getElementById('btnConfirmResume').textContent = 'Resume';
+  document.getElementById('btnClearSchedule').style.display = 'none';
+  // Pre-populate if a schedule is already pending
+  if (run && run.resume_at) {
+    const d = new Date(run.resume_at);
+    if (!isNaN(d)) {
+      document.getElementById('resumeAt').checked = true;
+      document.getElementById('resumeNow').checked = false;
+      document.getElementById('resumeHour').value = d.getHours();
+      document.getElementById('resumeMinute').value = d.getMinutes();
+      document.getElementById('resumeHour').disabled = false;
+      document.getElementById('resumeMinute').disabled = false;
+      document.getElementById('btnConfirmResume').textContent = 'Schedule Resume';
+      document.getElementById('btnClearSchedule').style.display = '';
+    }
+    if (run.resume_send_command) {
+      document.getElementById('resumeSendCheck').checked = true;
+      document.getElementById('resumeSendText').value = run.resume_send_command;
+      document.getElementById('resumeSendText').disabled = false;
+    }
+  }
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('resumeModal')).show();
+}
+
+async function clearSchedule() {
+  const btn = document.getElementById('btnClearSchedule');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/resume', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cwd: _resumeCwd, resumeMode: 'clear'})});
+    const data = await res.json();
+    if (data.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('resumeModal')).hide();
+      refresh();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Clear failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function confirmResume() {
+  const cwd = _resumeCwd;
+  const scheduled = document.getElementById('resumeAt').checked;
+  const sendChecked = document.getElementById('resumeSendCheck').checked;
+  const payload = {cwd, resumeMode: scheduled ? 'scheduled' : 'now'};
+  if (scheduled) {
+    payload.scheduleHour = parseInt(document.getElementById('resumeHour').value, 10);
+    payload.scheduleMinute = parseInt(document.getElementById('resumeMinute').value, 10);
+  }
+  if (sendChecked) {
+    payload.sendCommand = document.getElementById('resumeSendText').value;
+  }
+  const btn = document.getElementById('btnConfirmResume');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/resume', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const data = await res.json();
+    if (data.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('resumeModal')).hide();
+      refresh();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (e) {
+    alert('Resume failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+loadDiscovery(); setInterval(refresh, 5000); refresh();
+</script>
+</body>
+</html>

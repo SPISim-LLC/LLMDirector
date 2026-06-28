@@ -1,0 +1,30 @@
+{
+  "startTopic": "02: Critique_Spec",
+  "endTopic": "11: Ready_To_Commit",
+  "topics": {
+    "02: Critique_Spec": {
+      "nextTo": "04: Implement_Spec"
+    },
+    "04: Implement_Spec": {
+      "nextTo": "05: Validate_Implementation"
+    },
+    "05: Validate_Implementation": {
+      "action": "validate",
+      "passTo": "06: Review_Implementation",
+      "failTo": "05: Validate_Implementation",
+      "loopCounter": "Validate"
+    },
+    "06: Review_Implementation": {
+      "nextTo": "10: Update_Docs_And_Goldens"
+    },
+    "10: Update_Docs_And_Goldens": {
+      "nextTo": "09: Address_Review"
+    },
+    "09: Address_Review": {
+      "nextTo": "05: Validate_Implementation"
+    },
+    "11: Ready_To_Commit": {
+      "action": "commit_approval"
+    }
+  }
+}
