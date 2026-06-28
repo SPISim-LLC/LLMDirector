@@ -1,4 +1,5 @@
-# LLMDirector Usage Manual
+![SPISim Logo](./web/SPILogo.png)
+# SPISim™ LLMDirector Usage Manual
 
 *Please see [TRADEMARK.md](./TRADEMARK.md) regarding trademark info.*
 
