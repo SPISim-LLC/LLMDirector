@@ -17,6 +17,10 @@ Conductor web app does not need to be running).
 
 ---
 
+![LLMDirector Screenshot](./web/static/LLMDirector.png)
+
+---
+
 ## 1. Prerequisites
 
 Before launching LLMDirector, the following must already be in place:
